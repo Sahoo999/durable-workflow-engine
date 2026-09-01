@@ -1,0 +1,27 @@
+{
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1788247435686,
+      "tag": "0000_create_workflows",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1788248196238,
+      "tag": "0001_add_workflow_versions",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1788249413129,
+      "tag": "0002_add_workflow_runs",
+      "breakpoints": true
+    }
+  ]
+}
