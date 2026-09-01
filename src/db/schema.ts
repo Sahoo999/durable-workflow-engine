@@ -263,3 +263,43 @@ export const workflowEvents = pgTable(
     ).on(table.createdAt),
   }),
 );
+
+export const workers = pgTable(
+  "workers",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+
+    workerKey: text("worker_key").notNull().unique(),
+
+    status: text("status").notNull(),
+
+    hostname: text("hostname"),
+
+    lastHeartbeatAt: timestamp("last_heartbeat_at", {
+      withTimezone: true,
+    }),
+
+    startedAt: timestamp("started_at", {
+      withTimezone: true,
+    }),
+
+    createdAt: timestamp("created_at", {
+      withTimezone: true,
+    })
+      .defaultNow()
+      .notNull(),
+
+    updatedAt: timestamp("updated_at", {
+      withTimezone: true,
+    })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => ({
+    statusIdx: index("workers_status_idx").on(table.status),
+
+    heartbeatIdx: index(
+      "workers_last_heartbeat_at_idx",
+    ).on(table.lastHeartbeatAt),
+  }),
+);
