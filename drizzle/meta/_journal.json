@@ -22,6 +22,27 @@
       "when": 1788249413129,
       "tag": "0002_add_workflow_runs",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1788287035717,
+      "tag": "0003_add_tasks",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1788287556681,
+      "tag": "0004_add_task_attempts",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1788287848709,
+      "tag": "0005_add_workflow_events",
+      "breakpoints": true
     }
   ]
 }
