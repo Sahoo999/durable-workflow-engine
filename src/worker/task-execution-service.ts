@@ -1,15 +1,25 @@
-import { getTaskById } from "../db/repositories/task-repository.js";
+import { completeTaskIfRunning, getTaskById, updateTaskStatus } from "../db/repositories/task-repository.js";
+
 import {
   completeTaskAttempt,
   createTaskAttempt,
   failTaskAttempt,
   getNextAttemptNumber,
 } from "../db/repositories/task-attempt-repository.js";
-import { updateTaskStatus } from "../db/repositories/task-repository.js";
+
 import { getHandler } from "./handler-registry.js";
+import { startTaskHeartbeat } from "./task-heartbeat.js";
 import type { WorkerRuntime } from "./worker-service.js";
+
+import {
+  isTaskStatus,
+  type TaskStatus,
+} from "../types/task.js";
+
 import { transitionTask } from "../workflow/task-state-machine.js";
+
 import { dispatchTask } from "../queue/task-dispatcher.js";
+
 import {
   calculateBackoffMs,
   shouldRetry,
@@ -25,17 +35,24 @@ export const executeTask = async (
     throw new Error(`Task not found: ${taskId}`);
   }
 
-  const currentStatus = task.status;
+  /*
+   * Database values are runtime values, so validate the status
+   * before passing it into the type-safe state machine.
+   */
+  if (!isTaskStatus(task.status)) {
+    throw new Error(`Invalid task status in database: ${task.status}`);
+  }
+
+  const currentStatus: TaskStatus = task.status;
 
   const runningStatus = transitionTask(
-    currentStatus as never,
+    currentStatus,
     "RUNNING",
   );
 
   await updateTaskStatus(task.id, runningStatus);
 
-  const attemptNumber =
-    await getNextAttemptNumber(task.id);
+  const attemptNumber = await getNextAttemptNumber(task.id);
 
   const attempt = await createTaskAttempt({
     taskId: task.id,
@@ -44,6 +61,8 @@ export const executeTask = async (
     workerId: runtime.id,
     fencingToken: attemptNumber,
   });
+
+  const heartbeat = startTaskHeartbeat(attempt.id);
 
   try {
     const handler = getHandler(task.taskType);
@@ -55,57 +74,71 @@ export const executeTask = async (
     });
 
     await completeTaskAttempt(
-      attempt.id,
-      result,
-    );
+  attempt.id,
+  attempt.fencingToken,
+  result,
+);
 
-    await updateTaskStatus(
-      task.id,
-      transitionTask("RUNNING", "COMPLETED"),
-    );
+    await completeTaskIfRunning(task.id);
 
     return result;
   } catch (error) {
-    await failTaskAttempt(attempt.id, error);
+    await failTaskAttempt(
+      attempt.id,
+      attempt.fencingToken,
+      error,
+    );
 
-const retry = shouldRetry(
-  attempt.attemptNumber,
-  task.maxAttempts,
-);
+    const retry = shouldRetry(
+      attempt.attemptNumber,
+      task.maxAttempts,
+    );
 
-if (retry) {
-  const nextAttemptNumber = attempt.attemptNumber + 1;
-  const delayMs = calculateBackoffMs(attempt.attemptNumber);
+    if (retry) {
+      const nextAttemptNumber =
+        attempt.attemptNumber + 1;
 
-  await updateTaskStatus(task.id, "PENDING");
+      const delayMs = calculateBackoffMs(
+        attempt.attemptNumber,
+      );
 
-  await dispatchTask(
-    {
-      taskId: task.id,
-      workflowRunId: task.workflowRunId,
-      taskType: task.taskType,
-    },
-    {
-      delayMs,
-      attemptNumber: nextAttemptNumber,
-    },
-  );
+      await updateTaskStatus(
+        task.id,
+        "PENDING",
+      );
 
-  console.log("Task scheduled for retry:", {
-    taskId: task.id,
-    attemptNumber: nextAttemptNumber,
-    delayMs,
-  });
+      await dispatchTask(
+        {
+          taskId: task.id,
+          workflowRunId: task.workflowRunId,
+          taskType: task.taskType,
+        },
+        {
+          delayMs,
+          attemptNumber: nextAttemptNumber,
+        },
+      );
 
-  return {
-  status: "RETRY_SCHEDULED",
-  attemptNumber: nextAttemptNumber,
-  delayMs,
-};
-}
+      console.log("Task scheduled for retry:", {
+        taskId: task.id,
+        attemptNumber: nextAttemptNumber,
+        delayMs,
+      });
 
-await updateTaskStatus(task.id, "FAILED");
+      return {
+        status: "RETRY_SCHEDULED",
+        attemptNumber: nextAttemptNumber,
+        delayMs,
+      };
+    }
 
-throw error;
+    await updateTaskStatus(
+      task.id,
+      "FAILED",
+    );
+
+    throw error;
+  } finally {
+    heartbeat.stop();
   }
 };

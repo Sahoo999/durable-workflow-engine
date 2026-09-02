@@ -48,6 +48,7 @@ export const workflowVersions = pgTable(
       .defaultNow()
       .notNull(),
   },
+
   (table) => ({
     workflowVersionUnique: unique(
       "workflow_versions_workflow_version_unique",
@@ -150,6 +151,7 @@ export const tasks = pgTable(
       .defaultNow()
       .notNull(),
   },
+
   (table) => ({
     workflowRunTaskKeyUnique: unique(
       "tasks_workflow_run_task_key_unique",
@@ -160,6 +162,51 @@ export const tasks = pgTable(
     ).on(table.workflowRunId),
 
     statusIdx: index("tasks_status_idx").on(table.status),
+  }),
+);
+
+/*
+ * Worker records are declared before taskAttempts
+ * because taskAttempts.workerId references workers.id.
+ */
+export const workers = pgTable(
+  "workers",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+
+    workerKey: text("worker_key").notNull().unique(),
+
+    status: text("status").notNull(),
+
+    hostname: text("hostname"),
+
+    lastHeartbeatAt: timestamp("last_heartbeat_at", {
+      withTimezone: true,
+    }),
+
+    startedAt: timestamp("started_at", {
+      withTimezone: true,
+    }),
+
+    createdAt: timestamp("created_at", {
+      withTimezone: true,
+    })
+      .defaultNow()
+      .notNull(),
+
+    updatedAt: timestamp("updated_at", {
+      withTimezone: true,
+    })
+      .defaultNow()
+      .notNull(),
+  },
+
+  (table) => ({
+    statusIdx: index("workers_status_idx").on(table.status),
+
+    heartbeatIdx: index(
+      "workers_last_heartbeat_at_idx",
+    ).on(table.lastHeartbeatAt),
   }),
 );
 
@@ -179,11 +226,11 @@ export const taskAttempts = pgTable(
     status: text("status").notNull(),
 
     workerId: uuid("worker_id").references(
-  () => workers.id,
-  {
-    onDelete: "set null",
-  },
-),
+      () => workers.id,
+      {
+        onDelete: "set null",
+      },
+    ),
 
     fencingToken: integer("fencing_token").notNull(),
 
@@ -197,6 +244,10 @@ export const taskAttempts = pgTable(
       withTimezone: true,
     }),
 
+    lastHeartbeatAt: timestamp("last_heartbeat_at", {
+      withTimezone: true,
+    }),
+
     completedAt: timestamp("completed_at", {
       withTimezone: true,
     }),
@@ -207,18 +258,19 @@ export const taskAttempts = pgTable(
       .defaultNow()
       .notNull(),
   },
+
   (table) => ({
     taskAttemptUnique: unique(
       "task_attempts_task_attempt_number_unique",
     ).on(table.taskId, table.attemptNumber),
 
-    taskIdx: index("task_attempts_task_id_idx").on(
-      table.taskId,
-    ),
+    taskIdx: index(
+      "task_attempts_task_id_idx",
+    ).on(table.taskId),
 
-    statusIdx: index("task_attempts_status_idx").on(
-      table.status,
-    ),
+    statusIdx: index(
+      "task_attempts_status_idx",
+    ).on(table.status),
   }),
 );
 
@@ -254,6 +306,7 @@ export const workflowEvents = pgTable(
       .defaultNow()
       .notNull(),
   },
+
   (table) => ({
     workflowRunIdx: index(
       "workflow_events_workflow_run_id_idx",
@@ -266,45 +319,5 @@ export const workflowEvents = pgTable(
     createdAtIdx: index(
       "workflow_events_created_at_idx",
     ).on(table.createdAt),
-  }),
-);
-
-export const workers = pgTable(
-  "workers",
-  {
-    id: uuid("id").primaryKey().defaultRandom(),
-
-    workerKey: text("worker_key").notNull().unique(),
-
-    status: text("status").notNull(),
-
-    hostname: text("hostname"),
-
-    lastHeartbeatAt: timestamp("last_heartbeat_at", {
-      withTimezone: true,
-    }),
-
-    startedAt: timestamp("started_at", {
-      withTimezone: true,
-    }),
-
-    createdAt: timestamp("created_at", {
-      withTimezone: true,
-    })
-      .defaultNow()
-      .notNull(),
-
-    updatedAt: timestamp("updated_at", {
-      withTimezone: true,
-    })
-      .defaultNow()
-      .notNull(),
-  },
-  (table) => ({
-    statusIdx: index("workers_status_idx").on(table.status),
-
-    heartbeatIdx: index(
-      "workers_last_heartbeat_at_idx",
-    ).on(table.lastHeartbeatAt),
   }),
 );

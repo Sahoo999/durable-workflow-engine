@@ -1,4 +1,4 @@
-import { desc, eq } from "drizzle-orm";
+import { and, desc, eq, lt } from "drizzle-orm";
 import { db } from "../client.js";
 import { taskAttempts } from "../schema.js";
 
@@ -46,16 +46,58 @@ export const createTaskAttempt = async ({
 
 export const completeTaskAttempt = async (
   attemptId: string,
+  fencingToken: number,
   output: unknown,
 ): Promise<void> => {
-  await db
+  const result = await db
     .update(taskAttempts)
     .set({
       status: "COMPLETED",
       output,
       completedAt: new Date(),
     })
-    .where(eq(taskAttempts.id, attemptId));
+    .where(
+      and(
+        eq(taskAttempts.id, attemptId),
+        eq(taskAttempts.fencingToken, fencingToken),
+        eq(taskAttempts.status, "RUNNING"),
+      ),
+    )
+    .returning({ id: taskAttempts.id });
+
+  if (result.length === 0) {
+    throw new Error(
+      `Fencing violation: attempt ${attemptId} is no longer active`,
+    );
+  }
+};
+
+export const failTaskAttempt = async (
+  attemptId: string,
+  fencingToken: number,
+  error: unknown,
+): Promise<void> => {
+  const result = await db
+    .update(taskAttempts)
+    .set({
+      status: "FAILED",
+      error,
+      completedAt: new Date(),
+    })
+    .where(
+      and(
+        eq(taskAttempts.id, attemptId),
+        eq(taskAttempts.fencingToken, fencingToken),
+        eq(taskAttempts.status, "RUNNING"),
+      ),
+    )
+    .returning({ id: taskAttempts.id });
+
+  if (result.length === 0) {
+    throw new Error(
+      `Fencing violation: attempt ${attemptId} is no longer active`,
+    );
+  }
 };
 
 export const getNextAttemptNumber = async (
@@ -68,16 +110,46 @@ export const getNextAttemptNumber = async (
     : 1;
 };
 
-export const failTaskAttempt = async (
+
+export const updateTaskAttemptHeartbeat = async (
   attemptId: string,
-  error: unknown,
 ): Promise<void> => {
   await db
+    .update(taskAttempts)
+    .set({
+      lastHeartbeatAt: new Date(),
+    })
+    .where(eq(taskAttempts.id, attemptId));
+};
+
+export const failStaleTaskAttempt = async (
+  attemptId: string,
+  staleBefore: Date,
+  error: unknown,
+): Promise<{
+  id: string;
+  taskId: string;
+  attemptNumber: number;
+} | null> => {
+  const result = await db
     .update(taskAttempts)
     .set({
       status: "FAILED",
       error,
       completedAt: new Date(),
     })
-    .where(eq(taskAttempts.id, attemptId));
+    .where(
+      and(
+        eq(taskAttempts.id, attemptId),
+        eq(taskAttempts.status, "RUNNING"),
+        lt(taskAttempts.lastHeartbeatAt, staleBefore),
+      ),
+    )
+    .returning({
+      id: taskAttempts.id,
+      taskId: taskAttempts.taskId,
+      attemptNumber: taskAttempts.attemptNumber,
+    });
+
+  return result[0] ?? null;
 };

@@ -1,4 +1,5 @@
 import { Worker, type Job } from "bullmq";
+import { startRecoveryLoop } from "./recovery-loop.js";
 import { redisConnection } from "../config/redis.js";
 import type { TaskJobData } from "../types/jobs.js";
 import { executeTask } from "./task-execution-service.js";
@@ -11,6 +12,8 @@ import {
 
 const main = async (): Promise<void> => {
   const runtime = await startWorkerLifecycle();
+
+  const recoveryLoop = startRecoveryLoop();
 
   const worker = new Worker<TaskJobData>(
   "workflow-tasks",
@@ -52,6 +55,7 @@ console.log("Execution result:", result);
     );
 
     try {
+        recoveryLoop.stop();
       await worker.close();
       await stopWorkerLifecycle(runtime);
       await redisConnection.quit();
