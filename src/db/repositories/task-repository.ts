@@ -51,3 +51,12 @@ export const completeTaskIfRunning = async (
     );
   }
 };
+
+export const getTasksByWorkflowRunId = async (
+  workflowRunId: string,
+) => {
+  return db
+    .select()
+    .from(tasks)
+    .where(eq(tasks.workflowRunId, workflowRunId));
+};

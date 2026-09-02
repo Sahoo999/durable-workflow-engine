@@ -1,4 +1,5 @@
 import { completeTaskIfRunning, getTaskById, updateTaskStatus } from "../db/repositories/task-repository.js";
+import { dispatchReadyTasks } from "../workflow/workflow-orchestrator.js";
 
 import {
   completeTaskAttempt,
@@ -81,7 +82,12 @@ export const executeTask = async (
 
     await completeTaskIfRunning(task.id);
 
+    await dispatchReadyTasks(
+  task.workflowRunId,
+);
+
     return result;
+    
   } catch (error) {
     await failTaskAttempt(
       attempt.id,
