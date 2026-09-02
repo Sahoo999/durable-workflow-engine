@@ -3,54 +3,75 @@ import { redisConnection } from "../config/redis.js";
 import type { TaskJobData } from "../types/jobs.js";
 import { getHandler } from "./handler-registry.js";
 import "./handlers.js";
+import {
+  startWorkerLifecycle,
+  stopWorkerLifecycle,
+  type WorkerRuntime,
+} from "./worker-service.js";
 
-const worker = new Worker<TaskJobData>(
-  "workflow-tasks",
-  async (job: Job<TaskJobData>) => {
-    console.log("Received job:", job.id);
+const main = async (): Promise<void> => {
+  const runtime = await startWorkerLifecycle();
 
-    const handler = getHandler(job.data.taskType);
+  const worker = new Worker<TaskJobData>(
+    "workflow-tasks",
+    async (job: Job<TaskJobData>) => {
+      console.log("Received job:", job.id);
 
-    const result = await handler(job.data);
+      const handler = getHandler(job.data.taskType);
 
-    console.log("Job completed:", job.id);
+      const result = await handler(job.data);
 
-    return result;
-  },
-  {
-    connection: redisConnection,
-    concurrency: 1,
-  },
-);
+      console.log("Job completed:", job.id);
 
-worker.on("completed", (job, result) => {
-  console.log("Worker completed job:", job.id);
-  console.log("Result:", result);
-});
-
-worker.on("failed", (job, error) => {
-  console.error(
-    "Worker failed job:",
-    job?.id,
-    error,
+      return result;
+    },
+    {
+      connection: redisConnection,
+      concurrency: 1,
+    },
   );
-});
 
-const shutdown = async (signal: string): Promise<void> => {
-  console.log(`Received ${signal}. Shutting down worker...`);
+  worker.on("completed", (job, result) => {
+    console.log("Worker completed job:", job.id);
+    console.log("Result:", result);
+  });
 
-  await worker.close();
-  await redisConnection.quit();
+  worker.on("failed", (job, error) => {
+    console.error(
+      "Worker failed job:",
+      job?.id,
+      error,
+    );
+  });
 
-  process.exit(0);
+  console.log("Workflow worker started.");
+
+  const shutdown = async (
+    signal: string,
+  ): Promise<void> => {
+    console.log(
+      `Received ${signal}. Shutting down worker...`,
+    );
+
+    try {
+      await worker.close();
+      await stopWorkerLifecycle(runtime);
+      await redisConnection.quit();
+    } catch (error) {
+      console.error(
+        "Worker shutdown failed:",
+        error,
+      );
+
+      process.exitCode = 1;
+    }
+  };
+
+  process.on("SIGINT", () => {
+    void shutdown("SIGINT");
+  });
+
+  process.on("SIGTERM", () => {
+    void shutdown("SIGTERM");
+  });
 };
-
-process.on("SIGINT", () => {
-  void shutdown("SIGINT");
-});
-
-process.on("SIGTERM", () => {
-  void shutdown("SIGTERM");
-});
-
-console.log("Workflow worker started.");
