@@ -131,6 +131,10 @@ export const tasks = pgTable(
 
     timeoutMs: integer("timeout_ms"),
 
+  scheduledAt: timestamp("scheduled_at", {
+  withTimezone: true,
+   }),
+
     startedAt: timestamp("started_at", {
       withTimezone: true,
     }),

@@ -60,3 +60,28 @@ export const getTasksByWorkflowRunId = async (
     .from(tasks)
     .where(eq(tasks.workflowRunId, workflowRunId));
 };
+
+export const setTaskScheduledAt = async (
+  taskId: string,
+  scheduledAt: Date,
+): Promise<void> => {
+  await db
+    .update(tasks)
+    .set({
+      scheduledAt,
+      updatedAt: new Date(),
+    })
+    .where(eq(tasks.id, taskId));
+};
+
+export const clearTaskScheduledAt = async (
+  taskId: string,
+): Promise<void> => {
+  await db
+    .update(tasks)
+    .set({
+      scheduledAt: null,
+      updatedAt: new Date(),
+    })
+    .where(eq(tasks.id, taskId));
+};

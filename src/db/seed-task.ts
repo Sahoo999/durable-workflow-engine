@@ -46,7 +46,7 @@ const main = async (): Promise<void> => {
     .values({
       workflowRunId: run.id,
       taskKey: "hello-task",
-      taskType: "always-fail",
+      taskType: "sleep",
       status: "PENDING",
       input: {
         message: "Hello from PostgreSQL",

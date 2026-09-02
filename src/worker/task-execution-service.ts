@@ -1,4 +1,4 @@
-import { completeTaskIfRunning, getTaskById, updateTaskStatus } from "../db/repositories/task-repository.js";
+import { completeTaskIfRunning, getTaskById, updateTaskStatus, clearTaskScheduledAt } from "../db/repositories/task-repository.js";
 import { dispatchReadyTasks } from "../workflow/workflow-orchestrator.js";
 
 import {
@@ -44,6 +44,8 @@ export const executeTask = async (
     throw new Error(`Invalid task status in database: ${task.status}`);
   }
 
+  await clearTaskScheduledAt(task.id);
+
   const currentStatus: TaskStatus = task.status;
 
   const runningStatus = transitionTask(
@@ -87,7 +89,7 @@ export const executeTask = async (
 );
 
     return result;
-    
+
   } catch (error) {
     await failTaskAttempt(
       attempt.id,
