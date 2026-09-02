@@ -19,11 +19,13 @@ export const createTaskAttempt = async ({
   taskId,
   attemptNumber,
   input,
+  workerId,
   fencingToken,
 }: {
   taskId: string;
   attemptNumber: number;
   input: unknown;
+  workerId: string;
   fencingToken: number;
 }) => {
   const [attempt] = await db
@@ -32,6 +34,7 @@ export const createTaskAttempt = async ({
       taskId,
       attemptNumber,
       status: "RUNNING",
+      workerId,
       input,
       fencingToken,
       startedAt: new Date(),

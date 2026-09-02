@@ -178,7 +178,12 @@ export const taskAttempts = pgTable(
 
     status: text("status").notNull(),
 
-    workerId: uuid("worker_id"),
+    workerId: uuid("worker_id").references(
+  () => workers.id,
+  {
+    onDelete: "set null",
+  },
+),
 
     fencingToken: integer("fencing_token").notNull(),
 

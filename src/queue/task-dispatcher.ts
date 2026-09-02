@@ -5,7 +5,7 @@ import type { TaskJobData } from "../types/jobs.js";
 export const dispatchTask = async (
   data: TaskJobData,
 ): Promise<Job<TaskJobData>> => {
-  const jobId = `${data.taskId}-${data.attemptId}`;
+  const jobId = `${data.workflowRunId}-${data.taskId}`;
 
   return taskQueue.add("execute-task", data, {
     jobId,

@@ -10,7 +10,7 @@ const main = async (): Promise<void> => {
   const [workflow] = await db
     .insert(workflows)
     .values({
-      name: "worker-demo-workflow",
+     name: `worker-demo-workflow-${Date.now()}`,
     })
     .returning();
 

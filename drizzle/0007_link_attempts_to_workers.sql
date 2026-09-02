@@ -1,0 +1,1 @@
+ALTER TABLE "task_attempts" ADD CONSTRAINT "task_attempts_worker_id_workers_id_fk" FOREIGN KEY ("worker_id") REFERENCES "public"."workers"("id") ON DELETE set null ON UPDATE no action;

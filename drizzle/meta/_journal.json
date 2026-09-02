@@ -50,6 +50,13 @@
       "when": 1788288215844,
       "tag": "0006_add_workers",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1788330969107,
+      "tag": "0007_link_attempts_to_workers",
+      "breakpoints": true
     }
   ]
 }
