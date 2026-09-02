@@ -17,3 +17,7 @@ registerHandler("sleep", async (job) => {
     taskId: job.taskId,
   };
 });
+
+registerHandler("always-fail", async () => {
+  throw new Error("Intentional failure for retry testing");
+});

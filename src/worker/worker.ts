@@ -19,7 +19,7 @@ const main = async (): Promise<void> => {
 
     const result = await executeTask(job.data.taskId, runtime);
 
-    console.log("Task completed:", result);
+    console.log("Task execution finished:", result);
 
     return result;
   },
@@ -30,8 +30,8 @@ const main = async (): Promise<void> => {
 );
 
   worker.on("completed", (job, result) => {
-    console.log("Worker completed job:", job.id);
-    console.log("Result:", result);
+    console.log("Worker completed queue job:", job.id);
+console.log("Execution result:", result);
   });
 
   worker.on("failed", (job, error) => {
@@ -73,3 +73,8 @@ const main = async (): Promise<void> => {
     void shutdown("SIGTERM");
   });
 };
+
+main().catch((error) => {
+  console.error("Worker startup failed:", error);
+  process.exitCode = 1;
+});

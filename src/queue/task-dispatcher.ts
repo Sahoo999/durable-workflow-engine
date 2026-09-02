@@ -1,13 +1,25 @@
 import type { Job } from "bullmq";
 import { taskQueue } from "./task-queue.js";
 import type { TaskJobData } from "../types/jobs.js";
+import { updateTaskStatus } from "../db/repositories/task-repository.js";
 
 export const dispatchTask = async (
   data: TaskJobData,
+  options?: {
+    delayMs?: number;
+    attemptNumber?: number;
+  },
 ): Promise<Job<TaskJobData>> => {
-  const jobId = `${data.workflowRunId}-${data.taskId}`;
+  const suffix = options?.attemptNumber
+    ? `-attempt-${options.attemptNumber}`
+    : "";
+
+  const jobId = `${data.workflowRunId}-${data.taskId}${suffix}`;
+
+  await updateTaskStatus(data.taskId, "QUEUED");
 
   return taskQueue.add("execute-task", data, {
     jobId,
+    delay: options?.delayMs,
   });
 };

@@ -9,6 +9,11 @@ import { updateTaskStatus } from "../db/repositories/task-repository.js";
 import { getHandler } from "./handler-registry.js";
 import type { WorkerRuntime } from "./worker-service.js";
 import { transitionTask } from "../workflow/task-state-machine.js";
+import { dispatchTask } from "../queue/task-dispatcher.js";
+import {
+  calculateBackoffMs,
+  shouldRetry,
+} from "../workflow/retry-policy.js";
 
 export const executeTask = async (
   taskId: string,
@@ -61,18 +66,46 @@ export const executeTask = async (
 
     return result;
   } catch (error) {
-    await failTaskAttempt(attempt.id, {
-      message:
-        error instanceof Error
-          ? error.message
-          : String(error),
-    });
+    await failTaskAttempt(attempt.id, error);
 
-    await updateTaskStatus(
-      task.id,
-      transitionTask("RUNNING", "FAILED"),
-    );
+const retry = shouldRetry(
+  attempt.attemptNumber,
+  task.maxAttempts,
+);
 
-    throw error;
+if (retry) {
+  const nextAttemptNumber = attempt.attemptNumber + 1;
+  const delayMs = calculateBackoffMs(attempt.attemptNumber);
+
+  await updateTaskStatus(task.id, "PENDING");
+
+  await dispatchTask(
+    {
+      taskId: task.id,
+      workflowRunId: task.workflowRunId,
+      taskType: task.taskType,
+    },
+    {
+      delayMs,
+      attemptNumber: nextAttemptNumber,
+    },
+  );
+
+  console.log("Task scheduled for retry:", {
+    taskId: task.id,
+    attemptNumber: nextAttemptNumber,
+    delayMs,
+  });
+
+  return {
+  status: "RETRY_SCHEDULED",
+  attemptNumber: nextAttemptNumber,
+  delayMs,
+};
+}
+
+await updateTaskStatus(task.id, "FAILED");
+
+throw error;
   }
 };

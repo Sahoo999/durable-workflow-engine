@@ -8,20 +8,22 @@ describe("task dispatcher", () => {
   });
 
   it("dispatches a task job", async () => {
+    const taskId = "11111111-1111-1111-1111-111111111111";
+    const workflowRunId = "22222222-2222-2222-2222-222222222222";
+
     const job = await dispatchTask({
-      taskId: "task-123",
-      workflowRunId: "run-123",
-    
+      taskId,
+      workflowRunId,
       taskType: "hello",
     });
 
     expect(job.name).toBe("execute-task");
-    expect(job.data.taskId).toBe("task-123");
-    expect(job.data.workflowRunId).toBe("run-123");
-    
+    expect(job.data.taskId).toBe(taskId);
+    expect(job.data.workflowRunId).toBe(workflowRunId);
     expect(job.data.taskType).toBe("hello");
+
     expect(job.id).toBe(
-  "run-123-task-123",
-);
+      `${workflowRunId}-${taskId}`,
+    );
   });
 });
