@@ -325,3 +325,72 @@ export const workflowEvents = pgTable(
     ).on(table.createdAt),
   }),
 );
+
+export const taskApprovals = pgTable(
+  "task_approvals",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+
+    taskId: uuid("task_id")
+      .notNull()
+      .references(() => tasks.id, {
+        onDelete: "cascade",
+      }),
+
+    status: text("status")
+      .notNull()
+      .default("PENDING"),
+
+    requestedAt: timestamp("requested_at", {
+      withTimezone: true,
+    })
+      .defaultNow()
+      .notNull(),
+
+    resolvedAt: timestamp("resolved_at", {
+      withTimezone: true,
+    }),
+
+    resolvedBy: text("resolved_by"),
+  },
+  (table) => ({
+    taskIdx: index(
+      "task_approvals_task_id_idx",
+    ).on(table.taskId),
+
+    statusIdx: index(
+      "task_approvals_status_idx",
+    ).on(table.status),
+  }),
+);
+
+export const deadLetterTasks = pgTable(
+  "dead_letter_tasks",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+
+    taskId: uuid("task_id")
+      .notNull()
+      .references(() => tasks.id, {
+        onDelete: "restrict",
+      }),
+
+    reason: jsonb("reason"),
+
+    createdAt: timestamp("created_at", {
+      withTimezone: true,
+    })
+      .defaultNow()
+      .notNull(),
+  },
+
+  (table) => ({
+    taskIdx: index(
+      "dead_letter_tasks_task_id_idx",
+    ).on(table.taskId),
+
+    createdAtIdx: index(
+      "dead_letter_tasks_created_at_idx",
+    ).on(table.createdAt),
+  }),
+);

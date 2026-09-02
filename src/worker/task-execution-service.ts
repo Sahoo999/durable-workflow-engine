@@ -8,6 +8,10 @@ import {
   getNextAttemptNumber,
 } from "../db/repositories/task-attempt-repository.js";
 
+import {
+  addToDeadLetterQueue,
+} from "../db/repositories/dead-letter-repository.js";
+
 import { getHandler } from "./handler-registry.js";
 import { startTaskHeartbeat } from "./task-heartbeat.js";
 import type { WorkerRuntime } from "./worker-service.js";
@@ -141,11 +145,24 @@ export const executeTask = async (
     }
 
     await updateTaskStatus(
-      task.id,
-      "FAILED",
-    );
+  task.id,
+  "FAILED",
+);
 
-    throw error;
+await addToDeadLetterQueue({
+  taskId: task.id,
+  reason: {
+    code: "MAX_ATTEMPTS_EXCEEDED",
+    message:
+      error instanceof Error
+        ? error.message
+        : String(error),
+    attemptNumber: attempt.attemptNumber,
+    maxAttempts: task.maxAttempts,
+  },
+});
+
+throw error;
   } finally {
     heartbeat.stop();
   }

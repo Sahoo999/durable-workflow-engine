@@ -71,6 +71,20 @@
       "when": 1788337461441,
       "tag": "0009_nappy_ultimates",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1788346967484,
+      "tag": "0010_public_cloak",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1788347217969,
+      "tag": "0011_wakeful_ink",
+      "breakpoints": true
     }
   ]
 }

@@ -12,6 +12,10 @@ import { dispatchTask } from "../queue/task-dispatcher.js";
 
 import { findStaleAttempts } from "./stale-attempt-detector.js";
 
+import {
+  addToDeadLetterQueue,
+} from "../db/repositories/dead-letter-repository.js";
+
 export const recoverStaleAttempts = async (
   staleTimeoutMs: number,
 ): Promise<number> => {
@@ -67,14 +71,26 @@ export const recoverStaleAttempts = async (
       recovered.attemptNumber < task.maxAttempts;
 
     if (!retryAvailable) {
-      await updateTaskStatus(
-        task.id,
-        "FAILED",
-      );
+  await updateTaskStatus(
+    task.id,
+    "FAILED",
+  );
 
-      recoveredCount += 1;
-      continue;
-    }
+  await addToDeadLetterQueue({
+    taskId: task.id,
+    reason: {
+      code: "STALE_ATTEMPT_MAX_ATTEMPTS",
+      message:
+        "Task remained stale after reaching the maximum number of attempts.",
+      attemptNumber:
+        recovered.attemptNumber,
+      maxAttempts: task.maxAttempts,
+    },
+  });
+
+  recoveredCount += 1;
+  continue;
+}
 
     const nextAttemptNumber =
       recovered.attemptNumber + 1;
