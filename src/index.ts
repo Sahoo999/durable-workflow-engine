@@ -1,11 +1,14 @@
 import Fastify from "fastify";
 import { registerRoutes } from "./api/routes.js";
+import { startTracing } from "./observability/tracing.js";
+
+startTracing();
 
 const app = Fastify({
   logger: true,
 });
 
- registerRoutes(app);
+  registerRoutes(app);
 
 const start = async (): Promise<void> => {
   try {

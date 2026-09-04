@@ -4,6 +4,7 @@ import {
   workflows,
   workflowVersions,
   workflowRuns,
+  tasks,
 } from "../schema.js";
 
 export const getWorkflowByName = async (
@@ -114,4 +115,54 @@ export const createWorkflowRun = async ({
   }
 
   return run;
+};
+
+export const getAllWorkflows = async () => {
+  return db.select().from(workflows);
+};
+
+export const getWorkflowRunById = async (
+  runId: string,
+) => {
+  const result = await db
+    .select()
+    .from(workflowRuns)
+    .where(eq(workflowRuns.id, runId))
+    .limit(1);
+
+  return result[0] ?? null;
+};
+
+export const updateWorkflowRunStatus = async (
+  runId: string,
+  status: string,
+): Promise<void> => {
+  await db
+    .update(workflowRuns)
+    .set({
+      status,
+      updatedAt: new Date(),
+      ...(status === "RUNNING"
+        ? {
+            startedAt: new Date(),
+          }
+        : {}),
+      ...(status === "COMPLETED" ||
+      status === "FAILED" ||
+      status === "CANCELLED"
+        ? {
+            completedAt: new Date(),
+          }
+        : {}),
+    })
+    .where(eq(workflowRuns.id, runId));
+};
+
+export const getWorkflowRunTasks = async (
+  runId: string,
+) => {
+  return db
+    .select()
+    .from(tasks)
+    .where(eq(tasks.workflowRunId, runId));
 };

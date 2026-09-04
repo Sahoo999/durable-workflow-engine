@@ -10,6 +10,12 @@ import {
   type WorkerRuntime,
 } from "./worker-service.js";
 
+
+import { startTracing } from "../observability/tracing.js";
+
+startTracing();
+
+
 const main = async (): Promise<void> => {
   const runtime = await startWorkerLifecycle();
 

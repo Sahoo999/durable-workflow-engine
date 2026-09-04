@@ -85,3 +85,29 @@ export const clearTaskScheduledAt = async (
     })
     .where(eq(tasks.id, taskId));
 };
+
+export const createTasksForWorkflowRun = async (
+  workflowRunId: string,
+  taskDefinitions: Array<{
+    id: string;
+    type: string;
+    dependsOn?: string[];
+  }>,
+) => {
+  if (taskDefinitions.length === 0) {
+    return [];
+  }
+
+  return db
+    .insert(tasks)
+    .values(
+      taskDefinitions.map((definition) => ({
+        workflowRunId,
+        taskKey: definition.id,
+        taskType: definition.type,
+        status: "PENDING",
+        dependsOn: definition.dependsOn ?? [],
+      })),
+    )
+    .returning();
+};

@@ -9,6 +9,10 @@ import {
 } from "../db/repositories/task-attempt-repository.js";
 
 import {
+  synchronizeWorkflowRunStatus,
+} from "../workflow/workflow-run-coordinator.js";
+
+import {
   addToDeadLetterQueue,
 } from "../db/repositories/dead-letter-repository.js";
 
@@ -26,9 +30,25 @@ import { transitionTask } from "../workflow/task-state-machine.js";
 import { dispatchTask } from "../queue/task-dispatcher.js";
 
 import {
+  SpanStatusCode,
+  trace,
+} from "@opentelemetry/api";
+
+import {
+  taskExecutionsTotal,
+  taskFailuresTotal,
+  taskRetriesTotal,
+  taskDurationSeconds,
+} from "../observability/metrics.js";
+
+import {
   calculateBackoffMs,
   shouldRetry,
 } from "../workflow/retry-policy.js";
+
+const tracer = trace.getTracer(
+  "durable-workflow-engine",
+);
 
 export const executeTask = async (
   taskId: string,
@@ -61,6 +81,26 @@ export const executeTask = async (
 
   const attemptNumber = await getNextAttemptNumber(task.id);
 
+  const span = tracer.startSpan(
+  "workflow.task.execute",
+);
+
+span.setAttribute("task.id", task.id);
+span.setAttribute(
+  "workflow.run.id",
+  task.workflowRunId,
+);
+span.setAttribute(
+  "task.type",
+  task.taskType,
+);
+span.setAttribute(
+  "task.attempt",
+  attemptNumber,
+);
+
+const startedAt = process.hrtime.bigint();
+
   const attempt = await createTaskAttempt({
     taskId: task.id,
     attemptNumber,
@@ -89,6 +129,10 @@ export const executeTask = async (
     await completeTaskIfRunning(task.id);
 
     await dispatchReadyTasks(
+  task.workflowRunId,
+);
+
+await synchronizeWorkflowRunStatus(
   task.workflowRunId,
 );
 
@@ -147,6 +191,7 @@ export const executeTask = async (
     await updateTaskStatus(
   task.id,
   "FAILED",
+
 );
 
 await addToDeadLetterQueue({
