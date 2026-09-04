@@ -20,6 +20,12 @@ import {
   startWorkflowRun,
 } from "../workflow/workflow-run-service.js";
 
+import {
+  approveTask,
+  rejectTask,
+  requestApproval,
+} from "../workflow/approval-service.js";
+
 export const registerRoutes = async (
   fastify: FastifyInstance,
 ): Promise<void> => {
@@ -203,5 +209,96 @@ export const registerRoutes = async (
 
     return task;
   });
+
+fastify.post<{
+  Params: {
+    id: string;
+  };
+}>(
+  "/tasks/:id/approval",
+  async (request, reply) => {
+    try {
+      const approval =
+        await requestApproval(
+          request.params.id,
+        );
+
+      return reply
+        .code(201)
+        .send(approval);
+    } catch (error) {
+      return reply.code(400).send({
+        error:
+          error instanceof Error
+            ? error.message
+            : String(error),
+      });
+    }
+  },
+);
+
+fastify.post<{
+  Params: {
+    id: string;
+  };
+  Body: {
+    resolvedBy: string;
+  };
+}>(
+  "/approvals/:id/approve",
+  async (request, reply) => {
+    try {
+      const result =
+        await approveTask({
+          approvalId:
+            request.params.id,
+          resolvedBy:
+            request.body.resolvedBy,
+        });
+
+      return result;
+    } catch (error) {
+      return reply.code(400).send({
+        error:
+          error instanceof Error
+            ? error.message
+            : String(error),
+      });
+    }
+  },
+);
+
+fastify.post<{
+  Params: {
+    id: string;
+  };
+  Body: {
+    resolvedBy: string;
+  };
+}>(
+  "/approvals/:id/reject",
+  async (request, reply) => {
+    try {
+      const result =
+        await rejectTask({
+          approvalId:
+            request.params.id,
+          resolvedBy:
+            request.body.resolvedBy,
+        });
+
+      return result;
+    } catch (error) {
+      return reply.code(400).send({
+        error:
+          error instanceof Error
+            ? error.message
+            : String(error),
+      });
+    }
+  },
+);
+
 };
 
+ //  4937a428-a3e9-41ac-9885-457d84b4ee2b              62d28e6a-1597-4731-a42f-7d19373d6ba3
