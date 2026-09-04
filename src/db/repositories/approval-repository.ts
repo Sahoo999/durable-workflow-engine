@@ -64,3 +64,10 @@ export const resolveApproval = async ({
 
   return approval;
 };
+
+export const getPendingApprovals = async () => {
+  return db
+    .select()
+    .from(taskApprovals)
+    .where(eq(taskApprovals.status, "PENDING"));
+};

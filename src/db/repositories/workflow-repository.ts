@@ -166,3 +166,32 @@ export const getWorkflowRunTasks = async (
     .from(tasks)
     .where(eq(tasks.workflowRunId, runId));
 };
+
+export const getWorkflowRunsByWorkflowId = async (
+  workflowId: string,
+) => {
+  return db
+    .select({
+      id: workflowRuns.id,
+      workflowVersionId:
+        workflowRuns.workflowVersionId,
+      status: workflowRuns.status,
+      input: workflowRuns.input,
+      output: workflowRuns.output,
+      startedAt: workflowRuns.startedAt,
+      completedAt: workflowRuns.completedAt,
+      createdAt: workflowRuns.createdAt,
+      updatedAt: workflowRuns.updatedAt,
+    })
+    .from(workflowRuns)
+    .innerJoin(
+      workflowVersions,
+      eq(
+        workflowRuns.workflowVersionId,
+        workflowVersions.id,
+      ),
+    )
+    .where(
+      eq(workflowVersions.workflowId, workflowId),
+    );
+};

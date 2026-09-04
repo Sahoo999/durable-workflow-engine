@@ -45,3 +45,13 @@ export const getDeadLetterEntryByTaskId = async (
 
   return result[0] ?? null;
 };
+
+export const getDeadLetterTasks =
+  async () => {
+    return db
+      .select()
+      .from(deadLetterTasks)
+      .orderBy(
+        desc(deadLetterTasks.createdAt),
+      );
+  };

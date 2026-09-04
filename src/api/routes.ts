@@ -5,6 +5,7 @@ import {
   getLatestWorkflowVersion,
   getWorkflowByName,
   getWorkflowRunById,
+  getWorkflowRunsByWorkflowId,
 } from "../db/repositories/workflow-repository.js";
 
 import {
@@ -25,6 +26,14 @@ import {
   rejectTask,
   requestApproval,
 } from "../workflow/approval-service.js";
+
+import {
+  getPendingApprovals,
+} from "../db/repositories/approval-repository.js";
+
+import {
+  getTaskAttempts,
+} from "../db/repositories/task-attempt-repository.js";
 
 export const registerRoutes = async (
   fastify: FastifyInstance,
@@ -118,6 +127,13 @@ export const registerRoutes = async (
     };
   });
 
+  fastify.get(
+  "/approvals",
+  async () => {
+    return getPendingApprovals();
+  },
+);
+
   /*
    * Start a workflow run.
    */
@@ -209,6 +225,44 @@ export const registerRoutes = async (
 
     return task;
   });
+
+  fastify.get<{
+  Params: {
+    name: string;
+  };
+}>(
+  "/workflows/:name/runs",
+  async (request, reply) => {
+    const workflow =
+      await getWorkflowByName(
+        request.params.name,
+      );
+
+    if (!workflow) {
+      return reply.code(404).send({
+        error: "Workflow not found",
+      });
+    }
+
+    return getWorkflowRunsByWorkflowId(
+      workflow.id,
+    );
+  },
+);
+
+fastify.get<{
+  Params: {
+    id: string;
+  };
+}>(
+  "/tasks/:id/attempts",
+  async (request) => {
+    return getTaskAttempts(
+      request.params.id,
+    );
+  },
+);
+
 
 fastify.post<{
   Params: {

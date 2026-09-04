@@ -10,6 +10,7 @@ import {
 } from "../db/repositories/task-repository.js";
 
 import { dispatchTask } from "../queue/task-dispatcher.js";
+import { and, eq } from "drizzle-orm";
 
 export const requestApproval = async (
   taskId: string,

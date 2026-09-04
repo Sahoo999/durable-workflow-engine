@@ -153,3 +153,13 @@ export const failStaleTaskAttempt = async (
 
   return result[0] ?? null;
 };
+
+export const getTaskAttempts = async (
+  taskId: string,
+) => {
+  return db
+    .select()
+    .from(taskAttempts)
+    .where(eq(taskAttempts.taskId, taskId))
+    .orderBy(taskAttempts.attemptNumber);
+};
