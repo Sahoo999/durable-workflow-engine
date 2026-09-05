@@ -1,6 +1,7 @@
-import { eq } from "drizzle-orm";
+import { desc, eq } from "drizzle-orm";
 import { db } from "../client.js";
 import { workers } from "../schema.js";
+
 
 export const registerWorker = async ({
   workerKey,
@@ -58,4 +59,11 @@ export const markWorkerOffline = async (
       updatedAt: new Date(),
     })
     .where(eq(workers.id, workerId));
+};
+
+export const getWorkers = async () => {
+  return db
+    .select()
+    .from(workers)
+    .orderBy(desc(workers.createdAt));
 };

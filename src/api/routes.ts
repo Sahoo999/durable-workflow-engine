@@ -35,6 +35,11 @@ import {
   getTaskAttempts,
 } from "../db/repositories/task-attempt-repository.js";
 
+import {
+  getWorkers,
+} from "../db/repositories/worker-repository.js";
+
+
 export const registerRoutes = async (
   fastify: FastifyInstance,
 ): Promise<void> => {
@@ -55,6 +60,13 @@ export const registerRoutes = async (
 
     return register.metrics();
   });
+
+  fastify.get(
+  "/workers",
+  async () => {
+    return getWorkers();
+  },
+);
 
   /*
    * Create a workflow version.
