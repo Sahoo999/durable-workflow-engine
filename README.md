@@ -2,7 +2,7 @@
 
 # Durable Workflow Engine
 
-### A fault-tolerant, DAG-based workflow execution platform built from scratch
+### A fault-tolerant, DAG-based workflow orchestration platform, built from scratch
 
 <p>
   <strong>TypeScript</strong> · <strong>Fastify</strong> · <strong>PostgreSQL</strong> · <strong>Redis</strong> · <strong>BullMQ</strong> · <strong>Drizzle ORM</strong> · <strong>React</strong> · <strong>React Flow</strong> · <strong>OpenTelemetry</strong> · <strong>Prometheus</strong>
@@ -16,962 +16,438 @@
   <img alt="React" src="https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=111827">
 </p>
 
-<p>
-  <a href="#why-i-built-this">Why I built this</a> ·
-  <a href="#how-it-works">How it works</a> ·
-  <a href="#reliability-model">Reliability</a> ·
-  <a href="#dashboard">Dashboard</a> ·
-  <a href="#getting-started">Getting started</a> ·
-  <a href="#real-world-use-cases">Use cases</a>
-</p>
-
 </div>
 
 ---
 
-## Overview
+## The Problem
 
-**Durable Workflow Engine** is a workflow orchestration platform designed around a simple production problem:
+Almost every backend eventually needs to run a sequence of steps that depend on each other — charge a card, then reserve inventory, then ship, then notify — where any step can fail, retries have to happen safely, and someone needs to be able to answer "what actually happened?" after the fact.
 
-> **How do you reliably execute a multi-step workflow when tasks can fail, workers can disappear, retries can overlap, and operators still need visibility and control?**
+The naive version of this is a single function that calls step after step. It works until:
 
-Instead of treating a workflow as one long-running process, this project models execution as **durable state in PostgreSQL plus asynchronous task delivery through Redis/BullMQ**.
+- the process crashes halfway through step 3, and now you don't know if step 3 ran or not;
+- a retry fires while the original attempt is *also* still running, and both try to write the result;
+- a step needs a human to approve something before continuing, which could take minutes or days;
+- an operator needs to see, without reading logs, exactly which step failed and why.
 
-A workflow is defined as a **directed acyclic graph (DAG)**. Each task has a persistent lifecycle, execution attempts, dependency information, retry policy, heartbeat state, and observable execution history.
+A message queue (BullMQ, SQS, RabbitMQ) solves *delivery* — getting a job to a worker. It does not solve *execution state*: which tasks in a multi-step graph are done, which worker currently owns a task, whether that worker is still alive, or whether an old worker's result should even be trusted anymore.
 
-That makes the system closer to a small workflow platform than a simple job queue.
+**Durable Workflow Engine** is my attempt to build the layer that sits on top of a queue and actually answers those questions — using PostgreSQL as the source of truth for everything that matters, and Redis/BullMQ purely as the mechanism that wakes workers up.
 
 ---
 
 ## Why I Built This
 
-Most application backends eventually need some variation of:
+Production orchestration systems — Temporal, Airflow, AWS Step Functions — all solve the same underlying problem: keeping a multi-step process correct when the world around it is unreliable. I wanted to understand *how*, not just use one, so I built the core of that problem myself and solved it end to end.
 
-- run these steps in a specific order;
-- wait for dependencies before continuing;
-- retry transient failures;
-- survive a worker crash;
-- avoid stale workers overwriting newer results;
-- pause for human approval;
-- preserve execution history;
-- expose enough information for operators to understand what happened.
+That meant confronting the failure modes directly, not just reading about them:
 
-A basic queue can execute jobs, but **durable orchestration requires more than queueing**.
+**"A worker died mid-task. Now what?"**
+Without persisted state, the answer is "nobody knows." Here, the answer is: the task's heartbeat goes stale, the system detects it, and the task is safely handed to a new worker — because every task's status lives in Postgres, not in the crashed process's memory.
 
-I built this project from scratch to explore those distributed-systems problems directly: state transitions, idempotency, retries, failure recovery, worker coordination, database durability, observability, and operational tooling.
+**"The old worker came back and tried to write its result anyway."**
+This is the failure mode that actually breaks systems — not the crash itself, but a *stale* writer winning a race after the fact. I implemented **fencing tokens** so that once a task is reassigned, the old worker's write is rejected outright, no matter what result it's carrying.
 
-The result is a complete end-to-end system with both the **execution engine** and a **control-plane dashboard**.
+**"A step failed. Was that a blip, or is it actually broken?"**
+Retry policies with exponential backoff make that distinction automatically, and a task that's genuinely exhausted its retries lands in a dead-letter queue with full context — not a silently dropped job.
 
----
+**"Did this workflow actually finish?"**
+Run status is never a field some process sets and forgets — it's *recomputed* from the real state of every task, every time, so it can never silently drift from the truth.
 
-# What It Does
-
-At a high level, the platform lets you:
-
-1. Define a workflow as a versioned DAG.
-2. Start a workflow run with input data.
-3. Persist the run and task state in PostgreSQL.
-4. Dispatch ready tasks to BullMQ/Redis.
-5. Execute tasks on independent workers.
-6. Track each task through explicit execution attempts.
-7. Retry failed tasks using configurable retry limits and exponential backoff.
-8. Detect stale execution using heartbeats.
-9. Protect state from stale workers with fencing tokens.
-10. Recover execution after worker failures.
-11. Pause workflows for human approval.
-12. Move permanently failed tasks to a dead-letter queue.
-13. Replay dead-lettered work.
-14. Reconcile the overall workflow-run status from task state.
-15. Inspect all of this through a React operations dashboard.
+Solving each of these required the same underlying discipline: **treat state as the thing that must survive, and treat every process — API, worker, queue — as something that could disappear at any moment.** That constraint is what turned this from a job-runner script into an actual durable execution engine, complete with a React dashboard for operators to see and act on all of it.
 
 ---
 
-# The Core Idea
+## Why a Queue Isn't Enough
 
-The most important architectural decision is the separation between **durable state** and **asynchronous delivery**.
+This is the core design argument of the project, so it's worth stating directly.
+
+A queue guarantees a message gets delivered (at least once, usually). It does **not** track:
+
+| Question | A queue answers this? |
+|---|---|
+| What version of the workflow created this run? | No |
+| Which tasks have completed, and in what order? | No |
+| Is the worker currently holding this task still alive? | No |
+| Could a crashed worker still write a stale result after a retry succeeded? | No |
+| Should this failure be retried, or is it permanent? | No |
+| Can an operator safely replay a failed task without side effects? | No |
+| Did the workflow as a whole actually finish? | No |
+
+Every one of these questions requires durable, queryable state — which is exactly what a queue message, sitting in Redis, is not designed to be. So this engine keeps **PostgreSQL** as the durable record of workflow definitions, versions, runs, tasks, attempts, workers, approvals, and DLQ entries, and uses Redis/BullMQ only to get already-decided, already-persisted work in front of a worker process.
+
+---
+
+## Architecture
 
 ```text
                          ┌──────────────────────┐
-                         │   React Dashboard    │
-                         │  Operations Console  │
-                         └──────────┬───────────┘
+                         │   React Dashboard     │
+                         │  Operations Console   │
+                         └──────────┬────────────┘
                                     │ HTTP
                                     ▼
                          ┌──────────────────────┐
-                         │      Fastify API     │
-                         └──────┬─────────┬─────┘
+                         │      Fastify API      │
+                         └──────┬─────────┬──────┘
                                 │         │
                         state   │         │ dispatch
                                 ▼         ▼
-                     ┌──────────────┐  ┌────────────────┐
-                     │ PostgreSQL   │  │ Redis + BullMQ │
-                     │ Durable     │  │ Async delivery │
-                     │ state       │  └───────┬────────┘
-                     └──────┬───────┘          │
-                            │                  │
-                            └────────┬─────────┘
-                                     ▼
-                           ┌──────────────────┐
-                           │     Worker(s)    │
-                           │                  │
-                           │ execute task     │
-                           │ create attempt  │
-                           │ heartbeat        │
-                           │ report result    │
-                           └──────────────────┘
+                     ┌──────────────┐  ┌─────────────────┐
+                     │  PostgreSQL  │  │  Redis + BullMQ  │
+                     │ Durable      │  │ Async task       │
+                     │ source of    │  │ delivery         │
+                     │ truth        │  └────────┬─────────┘
+                     └──────┬───────┘            │
+                            │                    │
+                            └─────────┬──────────┘
+                                      ▼
+                            ┌───────────────────┐
+                            │      Worker(s)     │
+                            │  execute task      │
+                            │  create attempt    │
+                            │  send heartbeat     │
+                            │  report result      │
+                            └───────────────────┘
 ```
 
-PostgreSQL is the durable record of workflow, run, task, attempt, worker, approval, and event state. Redis/BullMQ is responsible for getting executable work to workers.
+**The one decision that shapes everything else:** state and delivery are two different systems, and the API never lets a worker's message *be* the truth. A worker reports "I finished task X" by writing to Postgres; BullMQ's only job was to have told the worker to start in the first place. This is what makes crash recovery, fencing, and reconciliation possible — if the queue message were the source of truth, a lost or duplicated message would mean lost or duplicated state, with no way to reconstruct what really happened.
 
-This distinction matters because **a queue message is not the workflow's source of truth**.
+### How a run actually executes
+
+Given a workflow shaped like this:
+
+```text
+        A
+       / \
+      B   C
+       \ /
+        D
+```
+
+execution proceeds as a sequence of persisted transitions, not a single in-process call chain:
+
+```text
+Workflow run created → tasks persisted → dependency analysis
+    → ready tasks (A) dispatched to BullMQ → worker executes A
+    → attempt persisted (success) → B and C become ready
+    → dispatched, executed, attempts persisted
+    → D becomes ready only once both B and C are COMPLETED
+    → D executes → run status reconciled from task states
+```
+
+If the process running any of this dies at any point, nothing is lost — the next reconciliation pass reads task state from Postgres and picks up exactly where things left off.
 
 ---
 
-# How a Workflow Executes
+## Task State Model
 
-Suppose a workflow is:
-
-```text
-             ┌───────┐
-             │   A   │
-             └───┬───┘
-                 / \
-                /   \
-          ┌────▼─┐ ┌─▼────┐
-          │  B   │ │  C   │
-          └───┬──┘ └──┬───┘
-              \       /
-               \     /
-                └──┬─┘
-                 ┌─▼───┐
-                 │  D  │
-                 └─────┘
-```
-
-The engine does not simply execute `A → B → C → D` as one process.
-
-Instead:
+Tasks move through explicit states, not implicit control flow:
 
 ```text
-Workflow definition
-        │
-        ▼
-Workflow run created
-        │
-        ▼
-Tasks persisted
-        │
-        ▼
-Dependency analysis
-        │
-        ▼
-Ready tasks dispatched
-        │
-        ▼
-BullMQ queue
-        │
-        ▼
-Worker executes task
-        │
-        ▼
-Task attempt persisted
-        │
-        ├── success ───────────────┐
-        │                           │
-        └── failure → retry/DLQ     │
-                                    ▼
-                         Dependent tasks become ready
-                                    │
-                                    ▼
-                           Run state reconciled
+PENDING → QUEUED → RUNNING → COMPLETED
 ```
 
-Every important transition is represented explicitly in persistent state.
+On failure:
+
+```text
+RUNNING → FAILED ──retry available──▶ PENDING (loops back)
+                └──max attempts reached──▶ DEAD LETTER QUEUE
+```
+
+Each execution is recorded as a distinct **attempt**, not just an overwritten status field:
+
+```text
+Task: charge-payment
+  Attempt #1 → FAILED   (gateway timeout)
+  Attempt #2 → FAILED   (gateway timeout)
+  Attempt #3 → COMPLETED
+```
+
+Keeping full attempt history (rather than a single mutable status) is what lets the system reason about retries, fencing, and post-incident debugging without losing information along the way.
 
 ---
 
-# Task State Model
+## Reliability Model
 
-Tasks move through explicit lifecycle states rather than relying on implicit in-memory control flow.
+This is where most of the actual engineering is, so each mechanism gets its own section.
 
-Typical execution:
+### 1. Heartbeats
 
-```text
-PENDING
-   │
-   ▼
-QUEUED
-   │
-   ▼
-RUNNING
-   │
-   ▼
-COMPLETED
-```
+While a worker executes a task, it periodically writes a heartbeat timestamp. If the heartbeat goes stale — the worker hasn't checked in within its expected interval — that's the signal the system uses to suspect the worker has died or hung, without waiting for it to time out some other way.
 
-Failure path:
+### 2. Fencing Tokens
+
+Detecting a dead worker is only half the problem. The harder half: what if the "dead" worker isn't actually dead — it's just slow, or paused (a GC pause, a network partition) — and it comes back and tries to write a result *after* the system has already reassigned its task to someone else?
 
 ```text
-RUNNING
-   │
-   ▼
-FAILED
-   │
-   ├──────── retry available ────────► PENDING → QUEUED → RUNNING
-   │
-   └──────── max attempts reached ──► DLQ
+Worker A takes task, gets fencing token 1
+Worker A stalls (long GC pause, network partition — not actually dead)
+System sees a stale heartbeat, reassigns the task
+Worker B takes over, gets fencing token 2, completes the task
+Worker A finally wakes up, tries to write its result with token 1
+                              │
+                              ▼
+                    rejected — token 1 is no longer current
 ```
 
-This explicit state-machine approach makes recovery and reconciliation possible without depending on process memory.
+Every write checks its token against the current one for that task. An old token is refused, full stop, regardless of whether the result it's carrying is "correct." This is the standard fencing-token pattern used to prevent split-brain writes in distributed systems, and implementing it was the part of this project that most changed how I think about "worker crashed" — it's never actually binary.
 
----
-
-# Reliability Model
-
-Reliability is the main engineering goal of this project.
-
-## 1. Durable State
-
-Workflow definitions, immutable versions, workflow runs, tasks, attempts, workers, approvals, and DLQ records are stored in PostgreSQL.
-
-A worker process can disappear without deleting the workflow's persisted state.
-
-## 2. Task Attempts
-
-A task is not just `SUCCESS` or `FAILED`.
-
-Each execution creates an attempt:
-
-```text
-Task: payment
-
-Attempt #1 → FAILED
-Attempt #2 → FAILED
-Attempt #3 → COMPLETED
-```
-
-This gives the engine an execution history and a concrete unit for recovery and fencing.
-
-## 3. Retries and Backoff
-
-Failed tasks can be retried up to their configured maximum attempt count.
-
-Retry jobs use delayed BullMQ delivery and exponential backoff.
-
-```text
-Failure
-   ↓
-Should retry?
-   │
-   ├── yes → calculate delay → queue next attempt
-   │
-   └── no  → mark FAILED → write DLQ entry
-```
-
-## 4. Heartbeats
-
-Workers maintain heartbeat timestamps while executing work.
-
-A stale heartbeat is evidence that an execution owner may have disappeared.
-
-## 5. Fencing Tokens
-
-Fencing prevents an old worker from committing results after a newer attempt has taken ownership.
-
-Conceptually:
-
-```text
-Worker A → token 1
-Worker crashes
-
-Worker B → token 2
-
-Worker A comes back and tries to write
-                │
-                ▼
-          rejected as stale
-```
-
-This is important because simply detecting a stale worker is not enough; the system must also prevent stale work from winning a race against newer work.
-
-## 6. Stale-Worker Recovery
-
-The system can detect stale execution and recover work so the workflow can continue instead of remaining permanently stuck in `RUNNING`.
-
-## 7. Idempotent Dispatch
-
-Normal dispatch uses a deterministic BullMQ job ID derived from the workflow run and task IDs.
-
-```text
-<workflowRunId>-<taskId>
-```
-
-Retries receive a distinct attempt suffix:
-
-```text
-<workflowRunId>-<taskId>-attempt-2
-```
-
-This gives duplicate normal dispatches the same queue identity while keeping retries distinct.
-
-## 8. Run-State Reconciliation
-
-A workflow run is derived from the state of its tasks rather than trusting a single worker process.
-
-```text
-All tasks COMPLETED
-        ↓
-Run COMPLETED
-```
-
-```text
-Any task permanently FAILED
-        ↓
-Run FAILED
-```
-
-That makes workflow state recoverable and observable.
-
----
-
-# Human Approval / Wait States
-
-Some workflows cannot be fully automated.
-
-The engine supports approval requests so execution can pause and wait for an operator decision.
-
-```text
-Task
-  │
-  ▼
-Approval requested
-  │
-  ▼
-WAITING
-  │
-  ├──── APPROVED ────► resume execution
-  │
-  └──── REJECTED ────► resolve according to workflow logic
-```
-
-The dashboard exposes pending approvals so an operator can approve or reject work without interacting directly with the database.
-
-This is useful for processes involving manual review, financial authorization, release gates, or other human-in-the-loop decisions.
-
----
-
-# Dead Letter Queue
-
-When a task exhausts its retry budget, the system preserves the failure in a dead-letter queue.
+### 3. Retries and Backoff
 
 ```text
 Task fails
-   ↓
-retry #1
-   ↓
-retry #2
-   ↓
-retry #3
-   ↓
-maximum attempts reached
-   ↓
-Dead Letter Queue
+   │
+   ▼
+attempts remaining? ──no──▶ mark FAILED permanently → write DLQ entry
+   │
+  yes
+   │
+   ▼
+calculate exponential backoff delay → schedule next attempt via delayed BullMQ job
 ```
 
-DLQ records contain the failed task and failure context, allowing an operator to inspect what happened.
+### 4. Idempotent Dispatch
 
-The platform also supports replay:
+The API needs to be safe to call more than once for the same logical dispatch (e.g., a client retries an HTTP request because it timed out, even though the server actually processed it). This is solved with a deterministic BullMQ job ID:
 
 ```text
-DLQ
- │
- └── Replay
-       ↓
-     QUEUED
-       ↓
-     Worker
+Normal dispatch:  <workflowRunId>-<taskId>
+Retry dispatch:   <workflowRunId>-<taskId>-attempt-2
 ```
 
-This turns the DLQ from a passive error bucket into an operational recovery mechanism.
+Two dispatch calls for the same task produce the same job ID, so BullMQ treats the second as a duplicate rather than double-executing it. Retries get a distinct suffix so they aren't mistaken for duplicates of the original.
+
+### 5. Run-State Reconciliation
+
+The workflow run's overall status is never tracked as its own independent field that some process updates and could get out of sync. It's *derived* from the current state of every task in it, every time it's checked:
+
+```text
+all tasks COMPLETED → run COMPLETED
+any task permanently FAILED → run FAILED
+otherwise → run still IN_PROGRESS
+```
+
+This means the run status can never drift from reality — it's recomputed from ground truth rather than cached and hoped to be correct.
 
 ---
 
-# Workflow Versioning
+## Human Approval / Wait States
 
-Workflow definitions are versioned rather than mutated in place.
-
-A run references the workflow version that created it.
+Not everything can or should be automated — financial authorization, release gates, and manual review steps all need a human in the loop. The engine supports pausing a task on an approval request:
 
 ```text
-Workflow: order-processing
-
-Version 1 ──► Run A
-Version 2 ──► Run B
-Version 3 ──► Run C
+Task → approval requested → WAITING
+                              │
+                    ┌─────────┴─────────┐
+                 APPROVED             REJECTED
+                    │                    │
+              resume execution    resolved per workflow logic
 ```
 
-This avoids ambiguity when a workflow definition changes while older runs are still executing or being investigated.
+A workflow can sit in `WAITING` for seconds or days — since state lives in Postgres and not in a running process, there's no timeout pressure on how long a human takes to respond.
 
 ---
 
-# Observability
+## Dead Letter Queue
 
-The system includes both tracing and metrics because a durable execution engine should be observable in production, not just debuggable locally.
-
-## OpenTelemetry
-
-Task execution creates tracing spans with execution context such as:
-
-- task ID;
-- workflow run ID;
-- task type;
-- attempt number;
-- worker ID;
-- execution duration;
-- success/error status.
-
-## Prometheus Metrics
-
-The engine records metrics for:
-
-- task executions;
-- task failures;
-- task retries;
-- task duration.
-
-The API exposes:
+When a task exhausts its retries, it doesn't just fail silently into a log line — it's written to a dead-letter table with the full failure context (which attempt, what error, when). From the dashboard, an operator can inspect exactly what went wrong and **replay** the task, which re-queues it as a fresh attempt:
 
 ```text
+DLQ entry → operator clicks Replay → task re-enters QUEUED → worker picks it up
+```
+
+This turns failure handling from "go read the logs and manually re-trigger something" into an actual operational workflow.
+
+---
+
+## Workflow Versioning
+
+Workflow definitions are immutable once published; editing a workflow creates a new version rather than mutating the old one. A run is permanently pinned to whichever version created it:
+
+```text
+order-processing v1 ──▶ Run A   (still executes against v1's definition)
+order-processing v2 ──▶ Run B
+order-processing v3 ──▶ Run C
+```
+
+This avoids the genuinely nasty class of bug where you "fix" a workflow definition and it silently changes the behavior of runs that are already halfway through executing.
+
+---
+
+## Observability
+
+A durable execution engine needs to be diagnosable in production, not just locally, so it ships with both tracing and metrics rather than either alone.
+
+**OpenTelemetry** spans are created per task execution, tagged with task ID, workflow run ID, task type, attempt number, worker ID, duration, and success/error status — enough to trace one execution across the whole distributed path from dispatch to completion.
+
+**Prometheus** metrics cover task executions, failures, retries, and duration, exposed at:
+
+```http
 GET /metrics
-```
-
-and a basic health endpoint:
-
-```text
 GET /health
 ```
 
 ---
 
-# Operations Dashboard
+## Operations Dashboard
 
-The project includes a React-based control plane for monitoring the engine.
+The React dashboard is the control plane for everything above — it exists so none of this reliability machinery requires reading raw database rows to use.
 
-## Workflow Overview
-
-The dashboard lists workflow definitions and provides navigation into individual workflow details.
-
-## Workflow Runs
-
-A workflow page exposes its runs, including run status and creation information.
-
-## Run Details
-
-A run can be inspected as an actual DAG rather than a flat list of jobs.
-
-The graph shows dependencies and execution status visually:
+- **Workflow overview** — all workflow definitions, with navigation into their versions and runs
+- **Run detail** — the DAG rendered visually via React Flow, showing live execution status per node, not just a flat task list
+- **Task inspection** — click into any task to see its full attempt history
+- **Approvals** — see pending approval requests and approve/reject directly
+- **Dead Letter Queue** — inspect and replay permanently failed tasks
+- **Workers** — live worker identity, hostname, status, and heartbeat freshness
 
 ```text
        A ✓
       /   \
      ▼     ▼
-    B ✓   C ⟳
+    B ✓   C ⟳ (running)
       \   /
        ▼ ▼
-       D •
+       D •  (waiting on dependencies)
 ```
 
-## Task Inspection
-
-Tasks can be selected to inspect details and their execution attempts.
-
-## Approvals
-
-Operators can see pending approval requests and approve or reject them from the dashboard.
-
-## Dead Letter Queue
-
-Operators can inspect permanently failed tasks and replay them.
-
-## Workers
-
-The worker view exposes worker identity, status, hostname, start time, and heartbeat information.
-
 ---
 
-# Technology Choices
+## Technology Choices
 
-| Technology | Why it is used |
+| Technology | Why it's used here |
 |---|---|
-| **TypeScript** | Type-safe implementation across the engine and UI |
-| **Node.js** | Runtime for the API and workers |
-| **Fastify** | Lightweight, high-performance HTTP API |
-| **PostgreSQL** | Durable transactional workflow state |
-| **Drizzle ORM** | Typed SQL access and schema management |
-| **Redis** | Fast coordination and queue backing store |
-| **BullMQ** | Durable asynchronous task delivery and delayed jobs |
-| **React** | Operations dashboard |
-| **React Router** | Dashboard navigation |
-| **React Flow** | Workflow DAG visualization |
-| **OpenTelemetry** | Distributed/task tracing |
-| **Prometheus** | Metrics collection |
-| **GitHub Actions** | Automated typecheck, tests, and builds |
-
-The important part is not the individual technologies; it is how they are combined around a durable execution model.
+| **TypeScript** | Type safety across the engine, worker, and dashboard — especially valuable for the task-state-machine logic, where an invalid transition should be a compile error, not a runtime surprise |
+| **PostgreSQL** | Transactional durability for workflow/run/task/attempt state — this is the whole point of the project, so it had to be a real relational database, not an in-memory store |
+| **Drizzle ORM** | Typed SQL access without hiding the actual queries — matters a lot when reasoning about state transitions and locking |
+| **Redis + BullMQ** | Battle-tested async delivery, delayed jobs for backoff, and job-ID-based deduplication — chosen deliberately as the *delivery* layer, not the state layer |
+| **Fastify** | Low-overhead HTTP API for both the dashboard and any future API consumers |
+| **React + React Flow** | React Flow specifically because a workflow run is fundamentally a graph, and a flat task list loses the dependency structure that makes the DAG understandable at a glance |
+| **OpenTelemetry + Prometheus** | Tracing and metrics as first-class concerns, since a system whose whole purpose is reliability needs to be observable, not just theoretically correct |
 
 ---
 
-# Project Structure
+## Project Structure
 
 ```text
 durable-workflow-engine/
 ├── src/
-│   ├── api/
-│   │   └── routes.ts
-│   │
-│   ├── config/
-│   │
+│   ├── api/                          # Fastify routes
 │   ├── db/
 │   │   ├── repositories/
 │   │   └── schema.ts
-│   │
 │   ├── observability/
 │   │   ├── metrics.ts
 │   │   └── tracing.ts
-│   │
 │   ├── queue/
-│   │   ├── task-dispatcher.ts
+│   │   ├── task-dispatcher.ts        # idempotent BullMQ dispatch
 │   │   └── task-queue.ts
-│   │
-│   ├── types/
-│   │
 │   ├── worker/
 │   │   ├── worker.ts
-│   │   ├── worker-service.ts
 │   │   ├── task-execution-service.ts
 │   │   └── task-heartbeat.ts
-│   │
 │   └── workflow/
-│       ├── task-state-machine.ts
+│       ├── task-state-machine.ts     # explicit lifecycle transitions
 │       ├── retry-policy.ts
 │       ├── workflow-orchestrator.ts
-│       ├── workflow-run-coordinator.ts
+│       ├── workflow-run-coordinator.ts  # run-state reconciliation
 │       ├── approval-service.ts
 │       └── dead-letter-service.ts
-│
 ├── tests/
 ├── drizzle/
-├── .github/
-│   └── workflows/
-│       └── ci.yml
-│
-├── docker-compose.yml
-└── package.json
+└── docker-compose.yml
 
 workflow-dashboard/
 └── src/
     ├── api/
     ├── components/
     ├── pages/
-    ├── types/
     └── App.tsx
 ```
 
 ---
 
-# API Surface
-
-The backend exposes endpoints for workflows, runs, tasks, approvals, DLQ, workers, health, and metrics.
-
-## Health and Observability
+## API Surface
 
 ```http
-GET /health
-GET /metrics
-```
+GET  /health                             GET  /metrics
 
-## Workflows
+POST /workflows                          GET  /workflows              GET /workflows/:name
+POST /workflows/:name/runs               GET  /workflows/:name/runs
 
-```http
-POST /workflows
-GET  /workflows
-GET  /workflows/:name
-```
+GET  /runs/:id                           GET  /runs/:id/tasks
+GET  /tasks/:id                          GET  /tasks/:id/attempts     POST /tasks/:id/approval
 
-## Runs
-
-```http
-POST /workflows/:name/runs
-GET  /workflows/:name/runs
-GET  /runs/:id
-GET  /runs/:id/tasks
-```
-
-## Tasks and Attempts
-
-```http
-GET /tasks/:id
-GET /tasks/:id/attempts
-POST /tasks/:id/approval
-```
-
-## Approvals
-
-```http
-GET  /approvals
-POST /approvals/:id/approve
-POST /approvals/:id/reject
-```
-
-## Dead Letter Queue
-
-```http
-GET  /dead-letter
-POST /dead-letter/:id/replay
-```
-
-## Workers
-
-```http
-GET /workers
+GET  /approvals                          POST /approvals/:id/approve  POST /approvals/:id/reject
+GET  /dead-letter                        POST /dead-letter/:id/replay
+GET  /workers
 ```
 
 ---
 
-# Real-World Use Cases
+## Real-World Use Cases
 
-This architecture maps well to systems where work spans multiple dependent steps and failures must not lose state.
+**Order fulfillment** — validate order → reserve inventory → charge payment → create shipment → send confirmation. A failed charge or shipment step retries independently without restarting the whole order.
 
-## Order Fulfillment
+**ETL pipelines** — extract → validate → transform → load, with independent branches executing concurrently and converging downstream.
 
-```text
-Validate order
-     ↓
-Reserve inventory
-     ↓
-Charge payment
-     ↓
-Create shipment
-     ↓
-Send confirmation
-```
+**CI/CD** — build → test → security checks → **manual approval** → deploy → smoke test. The approval gate is exactly the human-in-the-loop mechanism this engine implements natively.
 
-A failed payment or shipment step can be retried without restarting the entire workflow.
+**Financial operations** — generate transaction → risk validation → manual approval → settlement → audit event, where durable attempt history matters for after-the-fact auditing.
 
-## Data / ETL Pipelines
-
-```text
-Extract
-  ↓
-Validate
-  ↓
-Transform
-  ↓
-Load
-```
-
-Independent branches can execute concurrently and converge on downstream tasks.
-
-## CI/CD and Release Automation
-
-```text
-Build
-  ↓
-Unit tests
-  ↓
-Security checks
-  ↓
-Manual approval
-  ↓
-Deploy
-  ↓
-Smoke test
-```
-
-The approval state is useful when production deployment requires a human gate.
-
-## Financial / Back-Office Operations
-
-```text
-Generate transaction
-       ↓
-Risk validation
-       ↓
-Manual approval
-       ↓
-Settlement
-       ↓
-Audit event
-```
-
-Durable task attempts and explicit state make this model easier to inspect after failures.
-
-## Document Processing
-
-```text
-Upload document
-       ↓
-OCR
-       ↓
-Validation
-       ↓
-Enrichment
-       ↓
-Storage
-```
-
-Each stage can be independently retried or investigated.
+**Document processing** — upload → OCR → validation → enrichment → storage, where each stage benefits from independent retry.
 
 ---
 
-# Why Not Just Use a Queue?
+## Getting Started
 
-A queue solves **delivery**.
-
-A workflow engine must solve **execution state**.
-
-A production workflow system needs answers to questions such as:
-
-- What version of the workflow was this run created from?
-- Which tasks have completed?
-- Which task is blocking the DAG?
-- How many times has this task executed?
-- Is the current worker still alive?
-- Could an old worker still write a stale result?
-- Should this failure be retried or sent to a DLQ?
-- Can an operator safely replay the failed task?
-- Did the overall workflow actually finish?
-
-This project was built around those questions rather than treating the queue as the system of record.
-
----
-
-# Getting Started
-
-## Prerequisites
-
-- Node.js 20+
-- npm
-- Docker Desktop
-- PostgreSQL and Redis available through Docker Compose
-
-## 1. Start infrastructure
-
-From the backend project:
+**Prerequisites:** Node.js 20+, npm, Docker Desktop
 
 ```bash
+# 1. Start Postgres + Redis
 docker compose up -d
-```
 
-## 2. Install dependencies
-
-```bash
+# 2. Install dependencies
 npm install
-```
 
-## 3. Apply database migrations
-
-Use the repository's configured Drizzle migration workflow, for example:
-
-```bash
+# 3. Run migrations
 npx drizzle-kit migrate
-```
 
-## 4. Validate the backend
+# 4. Validate
+npm run typecheck && npm test && npm run build
 
-```bash
-npm run typecheck
-npm test
-npm run build
-```
-
-## 5. Start the API
-
-```bash
+# 5. Start the API
 npm run dev
-```
 
-## 6. Start a worker
-
-In another terminal:
-
-```bash
+# 6. Start a worker (separate terminal)
 npm run worker
-```
 
-## 7. Start the dashboard
-
-In the dashboard directory:
-
-```bash
-npm install
-npm run dev
-```
-
-The Vite development server will print the local dashboard URL.
-
----
-
-# Verification Checklist
-
-A full local verification should cover:
-
-```text
-[✓] PostgreSQL running
-[✓] Redis running
-[✓] API health endpoint
-[✓] Workflow creation/versioning
-[✓] Workflow run creation
-[✓] DAG execution
-[✓] Task attempts
-[✓] Retries and backoff
-[✓] Worker heartbeat
-[✓] Stale-worker recovery
-[✓] Fencing
-[✓] Run-state reconciliation
-[✓] Idempotent dispatch
-[✓] Human approval
-[✓] Dead-letter queue
-[✓] DLQ replay
-[✓] Worker lifecycle
-[✓] React dashboard
-[✓] CI pipeline
+# 7. Start the dashboard (separate terminal, from workflow-dashboard/)
+npm install && npm run dev
 ```
 
 ---
 
-# Testing Philosophy
+## Future Improvements
 
-The test suite is intended to protect the invariants that matter most for a workflow engine:
-
-### DAG readiness
-A task must not execute until its dependencies are complete.
-
-### Retry boundaries
-A task retries while it has attempts remaining and becomes terminal after the configured limit.
-
-### Idempotent dispatch
-Repeated normal dispatches resolve to the same logical queue job ID.
-
-### Fencing
-Older execution owners must not be able to overwrite state after a newer attempt takes ownership.
-
-### Recovery
-Stale execution can be detected and recovered.
-
-### Run reconciliation
-A workflow run becomes terminal based on the state of its tasks.
-
-These are the properties that make the implementation durable rather than merely functional on the happy path.
-
----
-
-# CI
-
-GitHub Actions runs the core backend checks automatically:
-
-```text
-npm ci
-   ↓
-npm run typecheck
-   ↓
-npm test
-   ↓
-npm run build
-```
-
-The dashboard is built as part of the repository's frontend validation workflow where configured.
-
----
-
-# Engineering Highlights
-
-From a software-engineering perspective, the project demonstrates several concepts that commonly appear in distributed backend systems:
-
-- explicit state machines instead of implicit lifecycle state;
-- persistence-first workflow execution;
-- asynchronous work queues separated from durable state;
-- retry and backoff policies;
-- execution-attempt history;
-- worker liveness tracking;
-- fencing against stale execution;
-- recovery from partial failure;
-- idempotent queue identity;
-- immutable workflow versions;
-- human-in-the-loop orchestration;
-- dead-letter handling and replay;
-- API-driven operational tooling;
-- tracing and metrics for production visibility;
-- automated CI validation.
-
-The goal was not to reproduce a commercial workflow platform feature-for-feature. The goal was to **build the core primitives yourself and understand why each one is necessary**.
-
----
-
-# Screenshots
-
-The repository's `workflow-dashboard` application provides screenshots that are useful for understanding the control plane:
-
-- workflow overview;
-- workflow details and versions;
-- workflow run monitoring;
-- DAG visualization;
-- task and attempt inspection;
-- approvals;
-- dead-letter queue;
-- worker health.
-
-Add the final dashboard screenshots to the repository under a `docs/screenshots/` directory and reference them here once committed.
-
-Example:
-
-```markdown
-![Workflow overview](docs/screenshots/workflows.png)
-![Run DAG](docs/screenshots/run-dag.png)
-![Approvals](docs/screenshots/approvals.png)
-![Workers](docs/screenshots/workers.png)
-```
-
----
-
-# Future Improvements
-
-The current implementation focuses on the core durable-execution model. Natural next steps would include:
-
-- horizontal worker autoscaling;
-- richer workflow expressions and branching;
-- concurrency limits and resource pools;
-- workflow cancellation and pause/resume controls;
-- stronger multi-tenant authorization;
-- event streaming and audit feeds;
-- more advanced queue-level observability;
-- production deployment manifests;
-- larger-scale performance and chaos benchmarks.
-
-These are intentionally treated as extensions rather than prerequisites for the core engine.
-
----
-
-# What I Learned Building It
-
-The most important lesson from the project is that **reliability is mostly about making state explicit**.
-
-A worker can crash.
-A network request can be duplicated.
-A retry can overlap with an old execution.
-A task can fail after partially doing work.
-A human can take hours to approve a step.
-
-The implementation therefore cannot assume that one process remembers what happened.
-
-Instead, the engine persists enough information to reconstruct the workflow state, identify stale execution, reject obsolete writers, retry safely, and give operators a useful explanation of what happened.
-
-That is the central idea behind the project.
+- Horizontal worker autoscaling
+- Richer branching/conditional logic in workflow definitions
+- Concurrency limits and resource pools per task type
+- Workflow-level cancellation and pause/resume
+- Multi-tenant authorization
+- Chaos-testing and larger-scale performance benchmarks
 
 ---
 
 <div align="center">
 
-## Built from scratch with a focus on durability, failure recovery, and operational visibility.
+<br>
+
+### ⚙️ Durable by design. Every crash is a state to recover from, not an error to swallow.
+
+<sub>Built from scratch — state machines, fencing, retries, and reconciliation, implemented end to end.</sub>
+
+<br>
 
 </div>
