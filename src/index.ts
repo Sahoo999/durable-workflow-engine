@@ -14,7 +14,9 @@ const app = Fastify({
 const start = async (): Promise<void> => {
   try {
    await app.register(cors, {
-  origin: /^http:\/\/localhost:\d+$/,
+  origin:
+  process.env.FRONTEND_URL ??
+   /^http:\/\/localhost:\d+$/,
 });
 
     await registerRoutes(app);
