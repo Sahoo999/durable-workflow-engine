@@ -1,31 +1,8 @@
 import { desc, eq } from "drizzle-orm";
 
 import { db } from "../client.js";
+
 import { deadLetterTasks } from "../schema.js";
-
-export const addToDeadLetterQueue = async ({
-  taskId,
-  reason,
-}: {
-  taskId: string;
-  reason: unknown;
-}) => {
-  const [entry] = await db
-    .insert(deadLetterTasks)
-    .values({
-      taskId,
-      reason,
-    })
-    .returning();
-
-  if (!entry) {
-    throw new Error(
-      "Failed to add task to dead letter queue",
-    );
-  }
-
-  return entry;
-};
 
 export const getDeadLetterEntries = async () => {
   return db
@@ -45,13 +22,3 @@ export const getDeadLetterEntryByTaskId = async (
 
   return result[0] ?? null;
 };
-
-export const getDeadLetterTasks =
-  async () => {
-    return db
-      .select()
-      .from(deadLetterTasks)
-      .orderBy(
-        desc(deadLetterTasks.createdAt),
-      );
-  };

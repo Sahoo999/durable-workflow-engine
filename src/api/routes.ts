@@ -39,6 +39,9 @@ import {
   getWorkers,
 } from "../db/repositories/worker-repository.js";
 
+import {
+  getDeadLetterEntries,
+} from "../db/repositories/dead-letter-repository.js";
 
 export const registerRoutes = async (
   fastify: FastifyInstance,
@@ -272,6 +275,13 @@ fastify.get<{
     return getTaskAttempts(
       request.params.id,
     );
+  },
+);
+
+fastify.get(
+  "/dead-letter",
+  async () => {
+    return getDeadLetterEntries();
   },
 );
 
