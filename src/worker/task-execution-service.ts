@@ -1,4 +1,10 @@
-import { completeTaskIfRunning, getTaskById, updateTaskStatus, clearTaskScheduledAt } from "../db/repositories/task-repository.js";
+import {
+  completeTaskIfRunning,
+  getTaskById,
+  updateTaskStatus,
+  clearTaskScheduledAt,
+} from "../db/repositories/task-repository.js";
+
 import { dispatchReadyTasks } from "../workflow/workflow-orchestrator.js";
 
 import {
@@ -17,7 +23,9 @@ import {
 } from "../db/repositories/dead-letter-repository.js";
 
 import { getHandler } from "./handler-registry.js";
+
 import { startTaskHeartbeat } from "./task-heartbeat.js";
+
 import type { WorkerRuntime } from "./worker-service.js";
 
 import {
@@ -57,88 +65,145 @@ export const executeTask = async (
   const task = await getTaskById(taskId);
 
   if (!task) {
-    throw new Error(`Task not found: ${taskId}`);
+    throw new Error(
+      `Task not found: ${taskId}`,
+    );
   }
 
   /*
-   * Database values are runtime values, so validate the status
-   * before passing it into the type-safe state machine.
+   * Database values are runtime values, so validate
+   * the status before passing it into the type-safe
+   * state machine.
    */
   if (!isTaskStatus(task.status)) {
-    throw new Error(`Invalid task status in database: ${task.status}`);
+    throw new Error(
+      `Invalid task status in database: ${task.status}`,
+    );
   }
 
   await clearTaskScheduledAt(task.id);
 
-  const currentStatus: TaskStatus = task.status;
+  const currentStatus: TaskStatus =
+    task.status;
 
   const runningStatus = transitionTask(
     currentStatus,
     "RUNNING",
   );
 
-  await updateTaskStatus(task.id, runningStatus);
+  await updateTaskStatus(
+    task.id,
+    runningStatus,
+  );
 
-  const attemptNumber = await getNextAttemptNumber(task.id);
+  const attemptNumber =
+    await getNextAttemptNumber(task.id);
 
   const span = tracer.startSpan(
-  "workflow.task.execute",
-);
+    "workflow.task.execute",
+  );
 
-span.setAttribute("task.id", task.id);
-span.setAttribute(
-  "workflow.run.id",
-  task.workflowRunId,
-);
-span.setAttribute(
-  "task.type",
-  task.taskType,
-);
-span.setAttribute(
-  "task.attempt",
-  attemptNumber,
-);
+  span.setAttribute(
+    "task.id",
+    task.id,
+  );
 
-const startedAt = process.hrtime.bigint();
+  span.setAttribute(
+    "workflow.run.id",
+    task.workflowRunId,
+  );
 
-  const attempt = await createTaskAttempt({
-    taskId: task.id,
+  span.setAttribute(
+    "task.type",
+    task.taskType,
+  );
+
+  span.setAttribute(
+    "task.attempt",
     attemptNumber,
-    input: task.input,
-    workerId: runtime.id,
-    fencingToken: attemptNumber,
-  });
+  );
 
-  const heartbeat = startTaskHeartbeat(attempt.id);
+  span.setAttribute(
+    "worker.id",
+    runtime.id,
+  );
+
+  const startedAt =
+    process.hrtime.bigint();
+
+  const attempt =
+    await createTaskAttempt({
+      taskId: task.id,
+      attemptNumber,
+      input: task.input,
+      workerId: runtime.id,
+      fencingToken: attemptNumber,
+    });
+
+  const heartbeat =
+    startTaskHeartbeat(attempt.id);
 
   try {
-    const handler = getHandler(task.taskType);
+    const handler =
+      getHandler(task.taskType);
 
     const result = await handler({
       taskId: task.id,
-      workflowRunId: task.workflowRunId,
+      workflowRunId:
+        task.workflowRunId,
       taskType: task.taskType,
     });
 
     await completeTaskAttempt(
-  attempt.id,
-  attempt.fencingToken,
-  result,
-);
+      attempt.id,
+      attempt.fencingToken,
+      result,
+    );
 
-    await completeTaskIfRunning(task.id);
+    await completeTaskIfRunning(
+      task.id,
+    );
 
+    /*
+     * A successful task may unlock dependent
+     * tasks, so dispatch anything that has
+     * now become ready.
+     */
     await dispatchReadyTasks(
+      task.workflowRunId,
+    );
+
+    /*
+     * Recalculate the workflow run state after
+     * the task reaches its terminal state.
+     */
+    await synchronizeWorkflowRunStatus(
+  task.workflowRunId,
   task.workflowRunId,
 );
 
-await synchronizeWorkflowRunStatus(
-  task.workflowRunId,
-);
+    span.setStatus({
+      code: SpanStatusCode.OK,
+    });
 
     return result;
-
   } catch (error) {
+    taskFailuresTotal.inc();
+
+    span.recordException(
+      error instanceof Error
+        ? error
+        : String(error),
+    );
+
+    span.setStatus({
+      code: SpanStatusCode.ERROR,
+      message:
+        error instanceof Error
+          ? error.message
+          : String(error),
+    });
+
     await failTaskAttempt(
       attempt.id,
       attempt.fencingToken,
@@ -154,9 +219,10 @@ await synchronizeWorkflowRunStatus(
       const nextAttemptNumber =
         attempt.attemptNumber + 1;
 
-      const delayMs = calculateBackoffMs(
-        attempt.attemptNumber,
-      );
+      const delayMs =
+        calculateBackoffMs(
+          attempt.attemptNumber,
+        );
 
       await updateTaskStatus(
         task.id,
@@ -166,49 +232,91 @@ await synchronizeWorkflowRunStatus(
       await dispatchTask(
         {
           taskId: task.id,
-          workflowRunId: task.workflowRunId,
+          workflowRunId:
+            task.workflowRunId,
           taskType: task.taskType,
         },
         {
           delayMs,
-          attemptNumber: nextAttemptNumber,
+          attemptNumber:
+            nextAttemptNumber,
         },
       );
 
-      console.log("Task scheduled for retry:", {
-        taskId: task.id,
-        attemptNumber: nextAttemptNumber,
-        delayMs,
-      });
+      taskRetriesTotal.inc();
+
+      console.log(
+        "Task scheduled for retry:",
+        {
+          taskId: task.id,
+          attemptNumber:
+            nextAttemptNumber,
+          delayMs,
+        },
+      );
 
       return {
         status: "RETRY_SCHEDULED",
-        attemptNumber: nextAttemptNumber,
+        attemptNumber:
+          nextAttemptNumber,
         delayMs,
       };
     }
 
+    /*
+     * No retries remain:
+     * task becomes permanently failed.
+     */
     await updateTaskStatus(
-  task.id,
-  "FAILED",
+      task.id,
+      "FAILED",
+    );
 
-);
+    await addToDeadLetterQueue({
+      taskId: task.id,
+      reason: {
+        code: "MAX_ATTEMPTS_EXCEEDED",
+        message:
+          error instanceof Error
+            ? error.message
+            : String(error),
+        attemptNumber:
+          attempt.attemptNumber,
+        maxAttempts:
+          task.maxAttempts,
+      },
+    });
 
-await addToDeadLetterQueue({
-  taskId: task.id,
-  reason: {
-    code: "MAX_ATTEMPTS_EXCEEDED",
-    message:
-      error instanceof Error
-        ? error.message
-        : String(error),
-    attemptNumber: attempt.attemptNumber,
-    maxAttempts: task.maxAttempts,
-  },
-});
+    /*
+     * The task is now terminal, so reconcile
+     * the workflow run as well.
+     */
+    await synchronizeWorkflowRunStatus(
+      task.workflowRunId,
+      task.workflowRunId,
+    );
 
-throw error;
+    throw error;
   } finally {
+    const durationSeconds =
+      Number(
+        process.hrtime.bigint() -
+          startedAt,
+      ) / 1_000_000_000;
+
+    taskExecutionsTotal.inc();
+
+    taskDurationSeconds.observe(
+      durationSeconds,
+    );
+
+    span.setAttribute(
+      "task.duration.seconds",
+      durationSeconds,
+    );
+
     heartbeat.stop();
+
+    span.end();
   }
 };

@@ -43,6 +43,10 @@ import {
   getDeadLetterEntries,
 } from "../db/repositories/dead-letter-repository.js";
 
+import {
+  replayDeadLetterTask,
+} from "../workflow/dead-letter-service.js";
+
 export const registerRoutes = async (
   fastify: FastifyInstance,
 ): Promise<void> => {
@@ -362,6 +366,31 @@ fastify.post<{
           resolvedBy:
             request.body.resolvedBy,
         });
+
+      return result;
+    } catch (error) {
+      return reply.code(400).send({
+        error:
+          error instanceof Error
+            ? error.message
+            : String(error),
+      });
+    }
+  },
+);
+
+fastify.post<{
+  Params: {
+    id: string;
+  };
+}>(
+  "/dead-letter/:id/replay",
+  async (request, reply) => {
+    try {
+      const result =
+        await replayDeadLetterTask(
+          request.params.id,
+        );
 
       return result;
     } catch (error) {

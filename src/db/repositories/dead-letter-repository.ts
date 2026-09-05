@@ -22,3 +22,35 @@ export const getDeadLetterEntryByTaskId = async (
 
   return result[0] ?? null;
 };
+
+export const deleteDeadLetterEntry = async (
+  id: string,
+): Promise<void> => {
+  await db
+    .delete(deadLetterTasks)
+    .where(eq(deadLetterTasks.id, id));
+};
+
+export const addToDeadLetterQueue = async ({
+  taskId,
+  reason,
+}: {
+  taskId: string;
+  reason: unknown;
+}) => {
+  const [entry] = await db
+    .insert(deadLetterTasks)
+    .values({
+      taskId,
+      reason,
+    })
+    .returning();
+
+  if (!entry) {
+    throw new Error(
+      "Failed to add task to dead letter queue",
+    );
+  }
+
+  return entry;
+};
