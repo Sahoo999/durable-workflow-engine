@@ -16,6 +16,8 @@
   <img alt="React" src="https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=111827">
 </p>
 
+ A running instance seeded with example workflows: one that succeeds, retries, and lands a task in the Dead Letter Queue, and one waiting on a human approval. The dashboard is read-only from the browser; run your own workflows by following [Getting Started](#getting-started) below.
+
 </div>
 
 ---
@@ -336,7 +338,8 @@ durable-workflow-engine/
 │   ├── api/                          # Fastify routes
 │   ├── db/
 │   │   ├── repositories/
-│   │   └── schema.ts
+│   │   ├── schema.ts
+│   │   └── seed-demo.ts              # registers demo-pipeline + approval-demo
 │   ├── observability/
 │   │   ├── metrics.ts
 │   │   └── tracing.ts
@@ -405,26 +408,44 @@ GET  /workers
 **Prerequisites:** Node.js 20+, npm, Docker Desktop
 
 ```bash
-# 1. Start Postgres + Redis
+# 1. Clone and enter the project
+git clone https://github.com/<your-username>/durable-workflow-engine.git
+cd durable-workflow-engine
+
+# 2. Start Postgres + Redis
 docker compose up -d
 
-# 2. Install dependencies
+# 3. Install dependencies (also creates .env from .env.example automatically)
 npm install
 
-# 3. Run migrations
-npx drizzle-kit migrate
+# 4. Run migrations
+npm run db:migrate
 
-# 4. Validate
-npm run typecheck && npm test && npm run build
+# 5. Register demo workflows and start example runs
+npm run seed:demo
 
-# 5. Start the API
+# 6. Start the API (separate terminal)
 npm run dev
 
-# 6. Start a worker (separate terminal)
+# 7. Start a worker (separate terminal)
 npm run worker
 
-# 7. Start the dashboard (separate terminal, from workflow-dashboard/)
+# 8. Start the dashboard (separate terminal, from workflow-dashboard/)
+cd workflow-dashboard
 npm install && npm run dev
+```
+
+Open the dashboard (default `http://localhost:5173`). `npm run seed:demo` registers two workflows and starts a run for each:
+
+- **`demo-pipeline`** — task `A` completes, `B` and `C` run in parallel, and `D` is deliberately configured to fail, so you can watch it exhaust its retries and land in the **Dead Letter Queue**, then try the **Replay** button.
+- **`approval-demo`** — a single task that immediately requests human approval, so the **Approvals** page has a real pending request to Approve or Reject.
+
+The seed script is safe to re-run — it detects already-registered workflows and skips re-registration, only starting a fresh run each time.
+
+To validate the codebase itself (typecheck, tests, build) rather than run it:
+
+```bash
+npm run typecheck && npm test && npm run build
 ```
 
 ---
