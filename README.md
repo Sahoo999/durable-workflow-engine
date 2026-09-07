@@ -467,7 +467,7 @@ npm run typecheck && npm test && npm run build
 
 ### ⚙️ Durable by design. Every crash is a state to recover from, not an error to swallow.
 
-<sub>Built from scratch — state machines, fencing, retries, and reconciliation, implemented end to end.</sub>
+<sub> Built for engineers who need to see the system, not just run it.</sub>
 
 <br>
 
