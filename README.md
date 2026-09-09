@@ -2,7 +2,7 @@
 
 # Durable Workflow Engine
 
-### A fault-tolerant, DAG-based workflow orchestration platform, built from scratch
+### A fault-tolerant, DAG based workflow orchestration platform, built from scratch
 
 <p>
   <strong>TypeScript</strong> · <strong>Fastify</strong> · <strong>PostgreSQL</strong> · <strong>Redis</strong> · <strong>BullMQ</strong> · <strong>Drizzle ORM</strong> · <strong>React</strong> · <strong>React Flow</strong> · <strong>OpenTelemetry</strong> · <strong>Prometheus</strong>
